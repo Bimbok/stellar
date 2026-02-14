@@ -1,0 +1,20 @@
+# Logs
+*.log
+nebula.log
+
+# Process IDs
+*.pid
+nebula.pid
+
+# Cache
+.cache/
+rclone_cache/
+
+# System / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary files
+*.tmp
+*.swp

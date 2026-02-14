@@ -1,0 +1,221 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+# --- Configuration ---
+# Allow overriding these via environment variables
+REMOTE="${NEBULA_REMOTE:-gdrive:}"
+PORT="${NEBULA_PORT:-8080}"
+CACHE="${NEBULA_CACHE:-$HOME/.cache/rclone}"
+LOG="${NEBULA_LOG:-$HOME/.cache/nebula.log}"
+PIDFILE="${NEBULA_PID:-$HOME/.cache/nebula.pid}"
+
+# --- Styling & Utils ---
+BOLD='\033[1m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
+
+check_deps() {
+    if ! command -v rclone >/dev/null 2>&1; then
+        echo -e "${RED}Error: rclone is not installed.${RESET}"
+        exit 1
+    fi
+}
+
+log_info() { echo -e "${BLUE}ℹ${RESET} $1"; }
+log_success() { echo -e "${GREEN}✔${RESET} $1"; }
+log_warn() { echo -e "${YELLOW}⚠${RESET} $1"; }
+log_error() { echo -e "${RED}✖ $1${RESET}"; }
+
+get_local_ip() {
+    local ip
+    # Method 1: Python (Most reliable for active interface)
+    if command -v python3 >/dev/null 2>&1; then
+        ip=$(python3 -c "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('1.1.1.1', 80)); print(s.getsockname()[0]); s.close()" 2>/dev/null)
+    fi
+
+    # Method 2: Generic ifconfig (No interface hardcoding)
+    if [ -z "$ip" ]; then
+        ip=$(ifconfig 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | head -n 1 | awk '{print $2}' | sed 's/addr://')
+    fi
+    
+    # Method 3: ip route fallback
+    if [ -z "$ip" ]; then
+        ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+')
+    fi
+    
+    echo "${ip:-127.0.0.1}"
+}
+
+get_pid() {
+    if [ -f "$PIDFILE" ]; then
+        cat "$PIDFILE"
+    else
+        # Fallback to pgrep if PID file is missing
+        pgrep -f "[r]clone serve http .* --addr 0.0.0.0:$PORT" | head -n 1
+    fi
+}
+
+is_running() {
+    local pid
+    pid=$(get_pid)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# --- Commands ---
+
+start_daemon() {
+    if is_running; then
+        log_warn "Nebula is already running (PID: $(get_pid))."
+        return
+    fi
+
+    check_deps
+    mkdir -p "$CACHE"
+
+    log_info "Starting Nebula daemon for remote: ${BOLD}$REMOTE${RESET}"
+
+    nohup rclone serve http "$REMOTE" \
+        --addr 0.0.0.0:$PORT \
+        --vfs-cache-mode writes \
+        --cache-dir "$CACHE" \
+        >"$LOG" 2>&1 &
+    
+    local new_pid=$!
+    echo "$new_pid" >"$PIDFILE"
+    
+    # Wait for the server to be responsive
+    local timeout=10
+    local success=0
+    while [ $timeout -gt 0 ]; do
+        if curl -s -I "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
+            success=1
+            break
+        fi
+        
+        # Check if process is still alive
+        if ! kill -0 "$new_pid" 2>/dev/null; then
+            break
+        fi
+        
+        sleep 1
+        ((timeout--))
+    done
+
+    if [ $success -eq 1 ]; then
+        local local_ip
+        local_ip=$(get_local_ip)
+        log_success "Nebula started successfully on port $PORT."
+        echo -e "  ${CYAN}➜ Local URL:${RESET}   http://127.0.0.1:$PORT"
+        echo -e "  ${CYAN}➜ Network URL:${RESET} http://$local_ip:$PORT"
+        echo -e "  ${CYAN}➜ PID:${RESET}         $new_pid"
+        echo -e "  ${CYAN}➜ Log:${RESET}         $LOG"
+    else
+        log_error "Nebula failed to start or is not responding. Check logs:"
+        if ! kill -0 "$new_pid" 2>/dev/null; then
+            tail -n 5 "$LOG"
+        else
+            log_warn "Process $new_pid is alive but port $PORT is not responding."
+            log_info "Tailing last few lines of log:"
+            tail -n 5 "$LOG"
+        fi
+        exit 1
+    fi
+}
+
+stop_daemon() {
+    if ! is_running; then
+        log_warn "Nebula is not running."
+        [ -f "$PIDFILE" ] && rm -f "$PIDFILE" # Cleanup stale pidfile
+        return
+    fi
+
+    local pid
+    pid=$(get_pid)
+    log_info "Stopping Nebula (PID: $pid)..."
+    
+    kill "$pid" 2>/dev/null
+    
+    # Wait for it to die
+    local timeout=5
+    while kill -0 "$pid" 2>/dev/null && [ $timeout -gt 0 ]; do
+        sleep 0.5
+        ((timeout--))
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+        log_warn "Process didn't stop gracefully, forcing kill..."
+        kill -9 "$pid" 2>/dev/null
+    fi
+
+    rm -f "$PIDFILE"
+    log_success "Nebula stopped."
+}
+
+show_status() {
+    local local_ip
+    local_ip=$(get_local_ip)
+    echo -e "${BOLD}Nebula Status:${RESET}"
+    echo -e "  ${BOLD}Remote:${RESET}  $REMOTE"
+    echo -e "  ${BOLD}Port:${RESET}    $PORT"
+    echo -e "  ${BOLD}Network:${RESET} http://$local_ip:$PORT"
+    echo -e "  ${BOLD}Log:${RESET}     $LOG"
+    
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        echo -e "  ${BOLD}State:${RESET}  ${GREEN}● Active (Running)${RESET}"
+        echo -e "  ${BOLD}PID:${RESET}    $pid"
+    else
+        echo -e "  ${BOLD}State:${RESET}  ${RED}○ Inactive (Stopped)${RESET}"
+    fi
+}
+
+show_logs() {
+    if [ ! -f "$LOG" ]; then
+        log_warn "No log file found at $LOG"
+        return
+    fi
+    log_info "Tailing last 20 lines of log (Ctrl+C to exit)..."
+    tail -f -n 20 "$LOG"
+}
+
+show_help() {
+    echo -e "${BOLD}Nebula - Rclone Serve Daemon Manager${RESET}"
+    echo
+    echo -e "Usage: nebula ${CYAN}[command]${RESET}"
+    echo
+    echo "Commands:"
+    echo -e "  ${GREEN}start${RESET}    Start the rclone http server"
+    echo -e "  ${GREEN}stop${RESET}     Stop the server"
+    echo -e "  ${GREEN}restart${RESET}  Restart the server"
+    echo -e "  ${GREEN}status${RESET}   Show current status and configuration"
+    echo -e "  ${GREEN}logs${RESET}     Tail the log file"
+    echo -e "  ${GREEN}help${RESET}     Show this help message"
+    echo
+}
+
+# --- Main Dispatch ---
+
+case "$1" in
+    start)   start_daemon ;;
+    stop)    stop_daemon ;;
+    restart) stop_daemon; sleep 1; start_daemon ;;
+    status)  show_status ;;
+    logs|log) show_logs ;;
+    help|--help|-h) show_help ;;
+    *)       
+        if [ -z "$1" ]; then
+            show_help
+        else
+            log_error "Unknown command: $1"
+            show_help
+            exit 1
+        fi
+        ;;
+esac

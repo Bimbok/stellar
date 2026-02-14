@@ -1,0 +1,193 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+# --- Configuration & Defaults ---
+DEFAULT_REMOTE="gdrive"
+DEFAULT_PATH="movies"
+MPV_PACKAGE="is.xyz.mpv"
+MPV_ACTIVITY=".MPVActivity"
+NEBULA_HOST="http://127.0.0.1:8080"
+
+# --- Styling ---
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+RED='\033[0;31m'
+MAGENTA='\033[0;35m'
+RESET='\033[0m'
+
+# --- Utilities ---
+
+exit_with_error() {
+  echo -e "${RED}✖ $1${RESET}"
+  exit 1
+}
+
+get_local_ip() {
+  local ip
+  if command -v python3 >/dev/null 2>&1; then
+    ip=$(python3 -c "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('1.1.1.1', 80)); print(s.getsockname()[0]); s.close()" 2>/dev/null)
+  fi
+  if [ -z "$ip" ]; then
+    ip=$(ifconfig 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | head -n 1 | awk '{print $2}' | sed 's/addr://')
+  fi
+  if [ -z "$ip" ]; then
+    ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+')
+  fi
+  echo "${ip:-127.0.0.1}"
+}
+
+check_deps() {
+  command -v rclone >/dev/null 2>&1 || exit_with_error "rclone is not installed. Please install it first."
+  command -v fzf >/dev/null 2>&1 || exit_with_error "fzf is not installed. Please install it first."
+}
+
+url_encode() {
+  # Python is robust for URL encoding if available, otherwise fallback to simple sed
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$1"
+  else
+    echo "$1" | sed 's/ /%20/g' | sed 's/\[/%5B/g' | sed 's/\]/%5D/g' | sed 's/(/%28/g' | sed 's/)/%29/g'
+  fi
+}
+
+show_banner() {
+  clear
+  echo -e "${MAGENTA}   ___ ___  _ __ ___   ___| |_ ${RESET}"
+  echo -e "${MAGENTA}  / __/ _ \| '_ \` _ \ / _ \ __|${RESET}"
+  echo -e "${MAGENTA} | (_| (_) | | | | | |  __/ |_ ${RESET}"
+  echo -e "${MAGENTA}  \___\___/|_| |_| |_|\___|\__|${RESET}"
+  echo -e "  ${CYAN}Remote Streamer CLI${RESET}"
+  echo ""
+}
+
+show_help() {
+  show_banner
+  echo -e "Usage: comet ${CYAN}[options]${RESET}"
+  echo ""
+  echo "Options:"
+  echo -e "  ${GREEN}-r, --remote <name>${RESET}   Rclone remote name (default: $DEFAULT_REMOTE)"
+  echo -e "  ${GREEN}-p, --path <path>${RESET}     Path to browse (default: $DEFAULT_PATH)"
+  echo -e "  ${GREEN}-h, --help${RESET}          Show this help"
+  echo ""
+  exit 0
+}
+
+# --- Main Logic ---
+
+# Argument Parsing
+REMOTE="$DEFAULT_REMOTE"
+SEARCH_PATH="$DEFAULT_PATH"
+
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+  -r | --remote)
+    REMOTE="$2"
+    shift
+    ;;
+  -p | --path)
+    SEARCH_PATH="$2"
+    shift
+    ;;
+  -h | --help) show_help ;;
+  *)
+    echo "Unknown parameter: $1"
+    show_help
+    ;;
+  esac
+  shift
+done
+
+check_deps
+
+# Check if Nebula is running (optional but helpful)
+if ! curl -s -I "$NEBULA_HOST" >/dev/null 2>&1; then
+  echo -e "${YELLOW}⚠ Warning: Nebula service seems to be down at $NEBULA_HOST${RESET}"
+  echo -e "  You can start it with: ${GREEN}nebula start${RESET}"
+  echo ""
+  read -p "Continue anyway? (y/N) " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    exit 1
+  fi
+fi
+
+# Ensure remote has colon if not present (heuristic)
+if [[ "$REMOTE" != *":" ]]; then
+  # if user passed "gdrive:", it stays "gdrive:"
+  # if user passed "gdrive", it becomes "gdrive:"
+  # But careful if user passed "gdrive:path" (rare for just remote arg?)
+  # The original script usage implied REMOTE="gdrive" then usage "$REMOTE:movies".
+  # So here we probably want REMOTE to just be the config name.
+  :
+fi
+# Actually, let's keep it simple. If the user passes a remote name, we construct the rclone path as "$REMOTE:$SEARCH_PATH"
+# But we need to handle if the user passes "gdrive:" with the colon.
+
+clean_remote="$REMOTE"
+if [[ "$clean_remote" == *":" ]]; then
+  clean_remote="${clean_remote%:}"
+fi
+
+show_banner
+echo -e "${BOLD}Fetching list from ${CYAN}${clean_remote}:${SEARCH_PATH}${RESET}..."
+
+# Fetch list (files only)
+# We use a temporary file to handle empty lists gracefully
+LIST_OUTPUT=$(rclone lsf "${clean_remote}:${SEARCH_PATH}" --files-only 2>/dev/null)
+
+if [ -z "$LIST_OUTPUT" ]; then
+  exit_with_error "No files found or remote unreachable at ${clean_remote}:${SEARCH_PATH}"
+fi
+
+# Select with FZF
+FILE=$(echo "$LIST_OUTPUT" | fzf \
+  --layout=reverse \
+  --border \
+  --height=40% \
+  --header="Select Media" \
+  --prompt="󱇒 " \
+  --pointer=" " \
+  --color="fg:cyan,bg:-1,hl:magenta,fg+:white,bg+:-1,hl+:red,info:yellow,prompt:green,pointer:green,marker:green,spinner:yellow,header:blue")
+
+if [ -n "$FILE" ]; then
+  # Encode components
+  ENCODED_FILE=$(url_encode "$FILE")
+
+  # Encode SEARCH_PATH component by component
+  ENCODED_PATH=""
+  IFS='/' read -ra ADDR <<<"$SEARCH_PATH"
+  for i in "${ADDR[@]}"; do
+    if [ -n "$i" ]; then
+      ENCODED_PART=$(url_encode "$i")
+      ENCODED_PATH="${ENCODED_PATH}/${ENCODED_PART}"
+    fi
+  done
+
+  # Construct Link
+  LINK="${NEBULA_HOST}${ENCODED_PATH}/${ENCODED_FILE}"
+
+  # UI Feedback
+  clear
+  local_ip=$(get_local_ip)
+  echo -e "${CYAN}╭───────────────────────────────────────╮${RESET}"
+  echo -e "${CYAN}│          󰤽  NOW STREAMING             │${RESET}"
+  echo -e "${CYAN}╰───────────────────────────────────────╯${RESET}"
+  echo -e "${BOLD}File:${RESET}    $FILE"
+  echo -e "${BOLD}Remote:${RESET}  $clean_remote"
+  echo -e "${BOLD}Network:${RESET} http://$local_ip:8080${ENCODED_PATH}/${ENCODED_FILE}"
+  echo -e "${GREEN}Status:${RESET}  Sending to MPV..."
+  echo ""
+
+  # Launch
+  am start --user 0 -a android.intent.action.VIEW -d "$LINK" -n "$MPV_PACKAGE/$MPV_ACTIVITY" >/dev/null 2>&1
+
+  if [ $? -eq 0 ]; then
+    echo -e "${GREEN}✔ Player launched.${RESET}"
+  else
+    echo -e "${RED}✖ Failed to launch player. Is MPV installed?${RESET}"
+  fi
+
+else
+  echo -e "\n${YELLOW}⚠ Selection cancelled.${RESET}"
+fi
+
