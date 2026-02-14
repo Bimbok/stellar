@@ -18,3 +18,6 @@ rclone_cache/
 # Temporary files
 *.tmp
 *.swp
+
+# AI contex
+GEMINI.md
