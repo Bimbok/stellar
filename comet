@@ -68,6 +68,7 @@ show_help() {
   echo ""
   echo "Options:"
   echo -e "  ${GREEN}-r, --resume${RESET}          Play the last played video directly"
+  echo -e "  ${GREEN}-d, --download${RESET}        Download the selected file instead of playing"
   echo -e "  ${GREEN}-R, --remote <name>${RESET}   Rclone remote name (default: $DEFAULT_REMOTE)"
   echo -e "  ${GREEN}-p, --path <path>${RESET}     Path to browse (default: $DEFAULT_PATH)"
   echo -e "  ${GREEN}-h, --help${RESET}          Show this help"
@@ -81,11 +82,15 @@ show_help() {
 REMOTE="$DEFAULT_REMOTE"
 SEARCH_PATH="$DEFAULT_PATH"
 RESUME=false
+DOWNLOAD=false
 
 while [[ "$#" -gt 0 ]]; do
   case $1 in
   -r | --resume)
     RESUME=true
+    ;;
+  -d | --download)
+    DOWNLOAD=true
     ;;
   -R | --remote)
     REMOTE="$2"
@@ -186,6 +191,26 @@ else
 fi
 
 if [ -n "$FILE" ]; then
+  if [ "$DOWNLOAD" = true ]; then
+    echo -e "${CYAN}╭───────────────────────────────────────╮${RESET}"
+    echo -e "${CYAN}│          󰇚  DOWNLOADING               │${RESET}"
+    echo -e "${CYAN}╰───────────────────────────────────────╯${RESET}"
+    echo -e "${BOLD}File:${RESET}    $FILE"
+    echo -e "${BOLD}Remote:${RESET}  $clean_remote"
+    echo -e "${BOLD}Dest:${RESET}    $(pwd)"
+    echo ""
+    
+    # Use rclone copy for the single file
+    rclone copy "${clean_remote}:${SEARCH_PATH}/${FILE}" . -P
+    
+    if [ $? -eq 0 ]; then
+      echo -e "\n${GREEN}✔ Download complete.${RESET}"
+    else
+      echo -e "\n${RED}✖ Download failed.${RESET}"
+    fi
+    exit 0
+  fi
+
   # UI Feedback
   clear
   local_ip=$(get_local_ip)

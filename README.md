@@ -56,6 +56,9 @@ comet
 # Resume the last played video directly
 comet -r
 
+# Download a file instead of playing
+comet -d
+
 # Browse a specific folder
 comet -p "TV Shows/Anime"
 
