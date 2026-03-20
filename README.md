@@ -53,11 +53,14 @@ Once Nebula is running, use Comet to find your media:
 # Browse the default path (movies)
 comet
 
+# Resume the last played video directly
+comet -r
+
 # Browse a specific folder
 comet -p "TV Shows/Anime"
 
-# Use a different rclone remote
-comet -r "my_onedrive" -p "Videos"
+# Use a different rclone remote (Note: -R for remote)
+comet -R "my_onedrive" -p "Videos"
 ```
 
 ---

@@ -6,6 +6,8 @@ DEFAULT_PATH="movies"
 MPV_PACKAGE="is.xyz.mpv"
 MPV_ACTIVITY=".MPVActivity"
 NEBULA_HOST="http://127.0.0.1:8080"
+CACHE_DIR="$HOME/.cache/stellar"
+LAST_PLAYED="$CACHE_DIR/last_played"
 
 # --- Styling ---
 BOLD='\033[1m'
@@ -65,7 +67,8 @@ show_help() {
   echo -e "Usage: comet ${CYAN}[options]${RESET}"
   echo ""
   echo "Options:"
-  echo -e "  ${GREEN}-r, --remote <name>${RESET}   Rclone remote name (default: $DEFAULT_REMOTE)"
+  echo -e "  ${GREEN}-r, --resume${RESET}          Play the last played video directly"
+  echo -e "  ${GREEN}-R, --remote <name>${RESET}   Rclone remote name (default: $DEFAULT_REMOTE)"
   echo -e "  ${GREEN}-p, --path <path>${RESET}     Path to browse (default: $DEFAULT_PATH)"
   echo -e "  ${GREEN}-h, --help${RESET}          Show this help"
   echo ""
@@ -77,10 +80,14 @@ show_help() {
 # Argument Parsing
 REMOTE="$DEFAULT_REMOTE"
 SEARCH_PATH="$DEFAULT_PATH"
+RESUME=false
 
 while [[ "$#" -gt 0 ]]; do
   case $1 in
-  -r | --remote)
+  -r | --resume)
+    RESUME=true
+    ;;
+  -R | --remote)
     REMOTE="$2"
     shift
     ;;
@@ -128,44 +135,57 @@ if [[ "$clean_remote" == *":" ]]; then
   clean_remote="${clean_remote%:}"
 fi
 
-show_banner
-echo -e "${BOLD}Fetching list from ${CYAN}${clean_remote}:${SEARCH_PATH}${RESET}..."
+# Ensure cache directory exists
+mkdir -p "$CACHE_DIR"
 
-# Fetch list (files only)
-# We use a temporary file to handle empty lists gracefully
-LIST_OUTPUT=$(rclone lsf "${clean_remote}:${SEARCH_PATH}" --files-only 2>/dev/null)
+if [ "$RESUME" = true ]; then
+  if [ -f "$LAST_PLAYED" ]; then
+    source "$LAST_PLAYED"
+    echo -e "${GREEN}✔ Resuming last played: ${BOLD}$FILE${RESET}"
+  else
+    exit_with_error "No last played video found."
+  fi
+else
+  show_banner
+  echo -e "${BOLD}Fetching list from ${CYAN}${clean_remote}:${SEARCH_PATH}${RESET}..."
 
-if [ -z "$LIST_OUTPUT" ]; then
-  exit_with_error "No files found or remote unreachable at ${clean_remote}:${SEARCH_PATH}"
+  # Fetch list (files only)
+  LIST_OUTPUT=$(rclone lsf "${clean_remote}:${SEARCH_PATH}" --files-only 2>/dev/null)
+
+  if [ -z "$LIST_OUTPUT" ]; then
+    exit_with_error "No files found or remote unreachable at ${clean_remote}:${SEARCH_PATH}"
+  fi
+
+  # Select with FZF
+  FILE=$(echo "$LIST_OUTPUT" | fzf \
+    --layout=reverse \
+    --border \
+    --height=40% \
+    --header="Select Media" \
+    --prompt="󱇒 " \
+    --pointer=" " \
+    --color="fg:cyan,bg:-1,hl:magenta,fg+:white,bg+:-1,hl+:red,info:yellow,prompt:green,pointer:green,marker:green,spinner:yellow,header:blue")
+
+  if [ -n "$FILE" ]; then
+    # Encode components
+    ENCODED_FILE=$(url_encode "$FILE")
+
+    # Encode SEARCH_PATH component by component
+    ENCODED_PATH=""
+    IFS='/' read -ra ADDR <<<"$SEARCH_PATH"
+    for i in "${ADDR[@]}"; do
+      if [ -n "$i" ]; then
+        ENCODED_PART=$(url_encode "$i")
+        ENCODED_PATH="${ENCODED_PATH}/${ENCODED_PART}"
+      fi
+    done
+
+    # Construct Link
+    LINK="${NEBULA_HOST}${ENCODED_PATH}/${ENCODED_FILE}"
+  fi
 fi
 
-# Select with FZF
-FILE=$(echo "$LIST_OUTPUT" | fzf \
-  --layout=reverse \
-  --border \
-  --height=40% \
-  --header="Select Media" \
-  --prompt="󱇒 " \
-  --pointer=" " \
-  --color="fg:cyan,bg:-1,hl:magenta,fg+:white,bg+:-1,hl+:red,info:yellow,prompt:green,pointer:green,marker:green,spinner:yellow,header:blue")
-
 if [ -n "$FILE" ]; then
-  # Encode components
-  ENCODED_FILE=$(url_encode "$FILE")
-
-  # Encode SEARCH_PATH component by component
-  ENCODED_PATH=""
-  IFS='/' read -ra ADDR <<<"$SEARCH_PATH"
-  for i in "${ADDR[@]}"; do
-    if [ -n "$i" ]; then
-      ENCODED_PART=$(url_encode "$i")
-      ENCODED_PATH="${ENCODED_PATH}/${ENCODED_PART}"
-    fi
-  done
-
-  # Construct Link
-  LINK="${NEBULA_HOST}${ENCODED_PATH}/${ENCODED_FILE}"
-
   # UI Feedback
   clear
   local_ip=$(get_local_ip)
@@ -183,6 +203,11 @@ if [ -n "$FILE" ]; then
 
   if [ $? -eq 0 ]; then
     echo -e "${GREEN}✔ Player launched.${RESET}"
+    # Save last played
+    echo "FILE=\"$FILE\"" > "$LAST_PLAYED"
+    echo "clean_remote=\"$clean_remote\"" >> "$LAST_PLAYED"
+    echo "ENCODED_PATH=\"$ENCODED_PATH\"" >> "$LAST_PLAYED"
+    echo "LINK=\"$LINK\"" >> "$LAST_PLAYED"
   else
     echo -e "${RED}✖ Failed to launch player. Is MPV installed?${RESET}"
   fi
