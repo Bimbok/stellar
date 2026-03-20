@@ -20,7 +20,7 @@ log_error() { echo -e "${RED}✖ $1${RESET}"; }
 
 # --- Execution ---
 
-echo -e "${BOLD}Gemini CLI - Nebula & Comet Installer${RESET}
+echo -e "${BOLD}Nebula & Comet Installer${RESET}
 "
 
 # 1. Install Dependencies
@@ -32,25 +32,25 @@ pkg install "${DEPENDENCIES[@]}" -y >/dev/null 2>&1
 
 # 2. Setup Bin Directory
 if [ ! -d "$BIN_DIR" ]; then
-    log_info "Creating $BIN_DIR..."
-    mkdir -p "$BIN_DIR"
+  log_info "Creating $BIN_DIR..."
+  mkdir -p "$BIN_DIR"
 fi
 
 # 3. Move Scripts & Set Permissions
 REPO_RAW_URL="https://raw.githubusercontent.com/Bimbok/stellar/main"
 
 for script in "${SCRIPTS[@]}"; do
-    if [ -f "./$script" ]; then
-        log_info "Setting up $script (local)..."
-        chmod +x "./$script"
-        if [ "$(realpath "./$script")" != "$(realpath "$BIN_DIR/$script")" ]; then
-            cp "./$script" "$BIN_DIR/"
-        fi
-    else
-        log_info "Downloading $script from GitHub..."
-        curl -sSL "$REPO_RAW_URL/$script" -o "$BIN_DIR/$script" || log_error "Failed to download $script"
-        chmod +x "$BIN_DIR/$script"
+  if [ -f "./$script" ]; then
+    log_info "Setting up $script (local)..."
+    chmod +x "./$script"
+    if [ "$(realpath "./$script")" != "$(realpath "$BIN_DIR/$script")" ]; then
+      cp "./$script" "$BIN_DIR/"
     fi
+  else
+    log_info "Downloading $script from GitHub..."
+    curl -sSL "$REPO_RAW_URL/$script" -o "$BIN_DIR/$script" || log_error "Failed to download $script"
+    chmod +x "$BIN_DIR/$script"
+  fi
 done
 
 # 4. PATH Configuration
@@ -59,23 +59,23 @@ SHELL_CONFIGS=("$HOME/.bashrc" "$HOME/.zshrc")
 ADDED_TO_PATH=0
 
 for config in "${SHELL_CONFIGS[@]}"; do
-    if [ -f "$config" ]; then
-        if ! grep -q "$PATH_ENTRY" "$config"; then
-            log_info "Adding $BIN_DIR to $config..."
-            echo -e "
+  if [ -f "$config" ]; then
+    if ! grep -q "$PATH_ENTRY" "$config"; then
+      log_info "Adding $BIN_DIR to $config..."
+      echo -e "
 # Added by Gemini CLI Installer
-$PATH_ENTRY" >> "$config"
-            ADDED_TO_PATH=1
-        fi
+$PATH_ENTRY" >>"$config"
+      ADDED_TO_PATH=1
     fi
+  fi
 done
 
 # 5. Rclone Configuration Check
 if ! rclone listremotes | grep -q "gdrive:"; then
-    echo ""
-    log_warn "No 'gdrive:' remote found in rclone."
-    log_info "You should run ${BOLD}rclone config${RESET} to set up your Google Drive remote."
-    log_info "Name it 'gdrive' for the default configuration to work."
+  echo ""
+  log_warn "No 'gdrive:' remote found in rclone."
+  log_info "You should run ${BOLD}rclone config${RESET} to set up your Google Drive remote."
+  log_info "Name it 'gdrive' for the default configuration to work."
 fi
 
 # 6. MPV Check
@@ -86,6 +86,6 @@ log_info "You can find it on the Play Store or F-Droid (is.xyz.mpv)."
 echo -e "
 ${GREEN}${BOLD}Installation Complete!${RESET}"
 if [ $ADDED_TO_PATH -eq 1 ]; then
-    log_warn "Please restart your terminal or run: ${BOLD}source ~/.bashrc${RESET}"
+  log_warn "Please restart your terminal or run: ${BOLD}source ~/.bashrc${RESET}"
 fi
 log_success "You can now run 'nebula' and 'comet' from anywhere."
